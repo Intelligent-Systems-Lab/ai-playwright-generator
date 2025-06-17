@@ -24,46 +24,46 @@ class AIElementAnalyzer:
         snapshot = {
         "url": self.page.url,
         "title": self.page.title(),
-        "page_content": self._get_essential_html(),  # 只保留關鍵 HTML
+        "page_content": self.page.content() #self._get_essential_html(),  # 只保留關鍵 HTML
     }
         return snapshot
     
-    def _get_essential_html(self) -> str:
-        """獲取去除雜訊的核心 HTML"""
-        try:
-            # 移除所有 script、style、comment，保留結構和內容
-            cleaned_html = self.page.evaluate("""
-            () => {
-                const clone = document.documentElement.cloneNode(true);
+    # def _get_essential_html(self) -> str:
+    #     """獲取去除雜訊的核心 HTML"""
+    #     try:
+    #         # 移除所有 style、comment，保留結構和內容
+    #         cleaned_html = self.page.evaluate("""
+    #         () => {
+    #             const clone = document.documentElement.cloneNode(true);
                 
-                // 移除雜訊元素
-                const noise = clone.querySelectorAll('script, style, meta, link');
-                noise.forEach(el => el.remove());
+    #             // 移除雜訊元素
+    #             const noise = clone.querySelectorAll('style, meta, link');
+    #             noise.forEach(el => el.remove());
                 
-                // 簡化屬性，只保留重要的
-                const elements = clone.querySelectorAll('*');
-                elements.forEach(el => {
-                    // 保留重要屬性
-                    const keepAttrs = ['id', 'class', 'type', 'name', 'href', 'placeholder', 'value'];
-                    const attrs = Array.from(el.attributes);
-                    attrs.forEach(attr => {
-                        if (!keepAttrs.includes(attr.name)) {
-                            el.removeAttribute(attr.name);
-                        }
-                    });
-                });
+    #             // 簡化屬性，只保留重要的
+    #             const elements = clone.querySelectorAll('*');
+    #             elements.forEach(el => {
+    #                 // 保留重要屬性
+    #                 const keepAttrs = ['id', 'class', 'type', 'name', 'href', 'placeholder', 'value'];
+    #                 const attrs = Array.from(el.attributes);
+    #                 attrs.forEach(attr => {
+    #                     if (!keepAttrs.includes(attr.name)) {
+    #                         el.removeAttribute(attr.name);
+    #                     }
+    #                 });
+    #             });
                 
-                return clone.outerHTML;
-            }
-            """)
+    #             return clone.outerHTML;
+    #         }
+    #         """)
             
-            return cleaned_html if cleaned_html else ""
+    #         return cleaned_html if cleaned_html else ""
             
-        except Exception as e:
-            print(f"HTML 清理失敗: {e}")
-            return self.page.content()[:50000]
+    #     except Exception as e:
+    #         print(f"HTML 清理失敗: {e}")
+    #         return self.page.content()[:50000]
     
-    def ai_analyze_page_functionality(self, snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    def ai_analyze_page_functionality(self, snapshot: Dict[str, Any], test_requirements:str) -> Dict[str, Any]:
         """讓 AI 自主分析頁面功能和元素"""
         prompt = f"""
 作為專業的網頁自動化測試專家，請基於以下**實際網站快照數據**進行精確分析。
@@ -80,33 +80,26 @@ class AIElementAnalyzer:
 - URL: {snapshot['url']}
 - 頁面標題: {snapshot['title']}
 
-📋 **實際 HTML 結構**：
+📋 作為網頁測試專家，請分析以下**完整的網頁內容**（包含功能相關的 JavaScript）：
     ```html
     {snapshot.get('page_content', '')} 
     ```
+🎯 **分析要求**：
+    1. **從 HTML 中發現** - 基於實際存在的元素，不要假設
+    2. **語言無關** - 適用任何語言的網站
+    3. **框架無關** - 不假設任何 CSS 框架或命名慣例
+    4. **生成通用選擇器** - 基於實際的標籤、屬性、文字內容    
+    5. **JavaScript 中的功能定義** - 許多現代網站把功能邏輯放在 JS 中
 
-⚠️ **JavaScript 驗證邏輯要求 - 關鍵修正**：
+    使用者的需求: {test_requirements}
 
-**正確的 JavaScript 語法範例**：
-1. ✅ 正確: `document.querySelector('input[type="search"]') !== null`
-2. ✅ 正確: `document.querySelectorAll('button').length > 0`
-3. ✅ 正確: `document.title.length > 0`
-4. ✅ 正確: `document.readyState === 'complete'`
-5. ✅ 正確: `window.location.href.includes('search')`
-6. ✅ 正確: `document.body.textContent.includes('搜尋')`
+💡 **具體分析使用者的要求**：
 
-💡 **具體分析要求**：
+    1. **功能發現**：基於實際元素和關鍵字，推斷網站的核心功能
+    2. **選擇器設計**：使用實際發現的元素文字和屬性來設計選擇器
+    3. **測試場景**：基於真實的元素互動設計可執行的測試場景
+    4. **驗證邏輯**：編寫在實際瀏覽器環境中可運行的JavaScript檢查
 
-1. **功能發現**：基於實際元素和關鍵字，推斷網站的核心功能
-2. **選擇器設計**：使用實際發現的元素文字和屬性來設計選擇器
-3. **測試場景**：基於真實的元素互動設計可執行的測試場景
-4. **驗證邏輯**：編寫在實際瀏覽器環境中可運行的JavaScript檢查
-
-⚠️ **選擇器設計最佳實踐**：
-- 優先使用 `page.get_by_text("實際文字")` 當元素有明確文字時
-- 使用 `page.locator("tag[attribute='value']")` 對有特定屬性的元素
-- 提供多個備選方案以提高穩定性
-- 避免使用複雜的CSS選擇器組合
 
 🎯 **期望的JSON回應格式**：
 
@@ -211,7 +204,7 @@ class AutomatedTestGenerator:
         genai.configure(api_key=self.api_key)
         self.model = genai.GenerativeModel('gemini-2.5-pro-preview-05-06')
     
-    def ai_driven_website_analysis(self) -> Dict[str, Any]:
+    def ai_driven_website_analysis(self,test_requirements) -> Dict[str, Any]:
         """AI 驅動的網站分析"""
         print("🔍 開始 AI 驅動的網站分析...")
         
@@ -242,7 +235,7 @@ class AutomatedTestGenerator:
                 analysis_result["page_snapshot"] = snapshot
                 
                 # AI 自主分析
-                ai_analysis = ai_analyzer.ai_analyze_page_functionality(snapshot)
+                ai_analysis = ai_analyzer.ai_analyze_page_functionality(snapshot,test_requirements)
                 analysis_result["ai_analysis"] = ai_analysis
 
                 browser.close()
@@ -526,7 +519,7 @@ class AutomatedTestGenerator:
         
         # 步驟 1: AI 驅動網站分析
         print("\n🔍 步驟 1/4: AI 驅動網站分析")
-        analysis_result = self.ai_driven_website_analysis()
+        analysis_result = self.ai_driven_website_analysis(test_requirements)
         
         # 步驟 2: 生成 AI 驅動測試策略
         print("\n🧠 步驟 2/4: 生成 AI 驅動測試策略")

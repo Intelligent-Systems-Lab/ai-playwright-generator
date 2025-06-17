@@ -22,282 +22,46 @@ class AIElementAnalyzer:
         print("📸 捕獲頁面快照...")
         
         snapshot = {
-            "url": self.page.url,
-            "title": self.page.title(),
-            "dom_structure": {},
-            "interactive_elements_count": {},
-            "form_analysis": {},
-            "content_patterns": [],
-            "actual_element_samples": {},
-            "text_content_keywords": [],
-            "semantic_structure": {}
-        }
-        
-        try:
-            
-            # 提取關鍵字
-            text_content = self.page.locator("body").text_content() or ""
-            keywords = self._extract_keywords(text_content)
-            snapshot["text_content_keywords"] = keywords
-            
-            # 分析 DOM 結構統計
-            snapshot["dom_structure"] = self._analyze_dom_structure()
-            
-            # 統計互動元素
-            snapshot["interactive_elements_count"] = self._count_interactive_elements()
-            
-            # 分析表單元素
-            snapshot["form_analysis"] = self._analyze_forms()
-            
-            # 捕獲實際元素樣本
-            snapshot["actual_element_samples"] = self._capture_actual_elements()
-            
-            # 捕獲內容模式
-            snapshot["content_patterns"] = self._capture_content_patterns()
-            
-            # 語義結構分析
-            snapshot["semantic_structure"] = self._analyze_semantic_structure()
-            
-        except Exception as e:
-            print(f"❌ 捕獲快照失敗: {e}")
-            
+        "url": self.page.url,
+        "title": self.page.title(),
+        "page_content": self._get_essential_html(),  # 只保留關鍵 HTML
+    }
         return snapshot
     
-    def _extract_keywords(self, text_content: str) -> List[str]:
-        """提取頁面關鍵字"""
-        keywords = []
-        text_lower = text_content.lower()
-        
-        # 定義關鍵字模式
-        keyword_patterns = {
-            "ecommerce": ["購物", "商品", "價格", "購買", "加入購物車", "結帳", "cart", "buy", "price", "product"],
-            "search": ["搜尋", "搜索", "查找", "search", "find"],
-            "filter": ["篩選", "過濾", "分類", "排序", "filter", "category", "sort"],
-            "navigation": ["首頁", "關於", "聯絡", "home", "about", "contact", "導航"],
-            "auth": ["登入", "註冊", "會員", "login", "register", "member", "account"],
-            "cart": ["購物車", "cart", "basket", "加入", "add"]
-        }
-        
-        found_categories = []
-        for category, words in keyword_patterns.items():
-            if any(word in text_lower for word in words):
-                found_categories.append(category)
-                keywords.extend([word for word in words if word in text_lower])
-        
-        return list(set(keywords))  
-    
-    def _capture_actual_elements(self) -> Dict[str, List[Dict]]:
-        """捕獲實際存在的元素樣本"""
-        elements = {
-            "buttons": [],
-            "inputs": [],
-            "links": [],
-            "selects": [],
-            "forms": []
-        }
-        
+    def _get_essential_html(self) -> str:
+        """獲取去除雜訊的核心 HTML"""
         try:
-            # 捕獲按鈕
-            buttons = self.page.locator("button").all()
-            for btn in buttons:
-                try:
-                    text = btn.text_content() or ""
-                    if text.strip():
-                        elements["buttons"].append({
-                            "text": text.strip(),
-                            "tag": "button",
-                            "visible": btn.is_visible()
-                        })
-                except:
-                    continue
-            
-            # 捕獲輸入框
-            inputs = self.page.locator("input").all()
-            for inp in inputs:
-                try:
-                    input_type = inp.get_attribute("type") or "text"
-                    placeholder = inp.get_attribute("placeholder") or ""
-                    name = inp.get_attribute("name") or ""
-                    
-                    elements["inputs"].append({
-                        "type": input_type,
-                        "placeholder": placeholder,
-                        "name": name,
-                        "visible": inp.is_visible()
-                    })
-                except:
-                    continue
-            
-            # 捕獲連結
-            links = self.page.locator("a").all()[:10]
-            for link in links:
-                try:
-                    text = link.text_content() or ""
-                    href = link.get_attribute("href") or ""
-                    if text.strip():
-                        elements["links"].append({
-                            "text": text.strip(),
-                            "href": href,
-                            "visible": link.is_visible()
-                        })
-                except:
-                    continue
-            
-            # 捕獲選擇器
-            selects = self.page.locator("select").all()
-            for select in selects:
-                try:
-                    name = select.get_attribute("name") or ""
-                    options = []
-                    try:
-                        option_elements = self.page.locator(f"select option").all()
-                        options = [opt.text_content() for opt in option_elements if opt.text_content()]
-                    except:
-                        pass
-                    
-                    elements["selects"].append({
-                        "name": name,
-                        "options": options,
-                        "visible": select.is_visible()
-                    })
-                except:
-                    continue
-                    
-        except Exception as e:
-            print(f"元素捕獲失敗: {e}")
-            
-        return elements
-    
-    def _analyze_semantic_structure(self) -> Dict[str, Any]:
-        """分析語義結構"""
-        semantic = {
-            "has_navigation": False,
-            "has_main_content": False,
-            "has_sidebar": False,
-            "has_footer": False,
-            "content_sections": []
-        }
-        
-        try:
-            # 檢查語義標籤
-            semantic["has_navigation"] = self.page.locator("nav").count() > 0
-            semantic["has_main_content"] = self.page.locator("main").count() > 0
-            semantic["has_sidebar"] = self.page.locator("aside, .sidebar").count() > 0
-            semantic["has_footer"] = self.page.locator("footer").count() > 0
-            
-            # 檢查內容區塊
-            sections = self.page.locator("section, .section, .content-area").all()[:5]
-            for section in sections:
-                try:
-                    text = section.text_content() or ""
-                    if len(text.strip()) > 50:  # 有實質內容
-                        semantic["content_sections"].append({
-                            "length": len(text),
-                            "has_links": section.locator("a").count(),
-                            "has_buttons": section.locator("button").count()
-                        })
-                except:
-                    continue
-                    
-        except Exception as e:
-            print(f"語義分析失敗: {e}")
-            
-        return semantic
-    
-    def _analyze_dom_structure(self) -> Dict[str, int]:
-        """分析 DOM 結構統計"""
-        structure = {}
-        
-        # 統計各種標籤數量
-        tags_to_count = [
-            "div", "span", "p", "a", "button", "input", 
-            "select", "form", "ul", "li", "img", "h1", 
-            "h2", "h3", "table", "tr", "td"
-        ]
-        
-        for tag in tags_to_count:
-            try:
-                count = self.page.locator(tag).count()
-                structure[f"{tag}_count"] = count
-            except:
-                structure[f"{tag}_count"] = 0
+            # 移除所有 script、style、comment，保留結構和內容
+            cleaned_html = self.page.evaluate("""
+            () => {
+                const clone = document.documentElement.cloneNode(true);
                 
-        return structure
-    
-    def _count_interactive_elements(self) -> Dict[str, int]:
-        """統計互動元素"""
-        interactive = {}
-        
-        element_types = {
-            "clickable_buttons": "button",
-            "text_inputs": "input[type='text']",
-            "search_inputs": "input[type='search']",
-            "select_dropdowns": "select",
-            "checkboxes": "input[type='checkbox']",
-            "radio_buttons": "input[type='radio']",
-            "links": "a",
-            "submit_buttons": "input[type='submit']"
-        }
-        
-        for name, selector in element_types.items():
-            try:
-                interactive[name] = self.page.locator(selector).count()
-            except:
-                interactive[name] = 0
+                // 移除雜訊元素
+                const noise = clone.querySelectorAll('script, style, meta, link');
+                noise.forEach(el => el.remove());
                 
-        return interactive
-    
-    def _analyze_forms(self) -> Dict[str, Any]:
-        """分析表單信息"""
-        forms_info = {
-            "total_forms": 0,
-            "form_elements": [],
-            "input_types": {}
-        }
-        
-        try:
-            forms_info["total_forms"] = self.page.locator("form").count()
+                // 簡化屬性，只保留重要的
+                const elements = clone.querySelectorAll('*');
+                elements.forEach(el => {
+                    // 保留重要屬性
+                    const keepAttrs = ['id', 'class', 'type', 'name', 'href', 'placeholder', 'value'];
+                    const attrs = Array.from(el.attributes);
+                    attrs.forEach(attr => {
+                        if (!keepAttrs.includes(attr.name)) {
+                            el.removeAttribute(attr.name);
+                        }
+                    });
+                });
+                
+                return clone.outerHTML;
+            }
+            """)
             
-            # 分析輸入類型分佈
-            input_types = ["text", "search", "email", "password", "submit", "button"]
-            for input_type in input_types:
-                count = self.page.locator(f"input[type='{input_type}']").count()
-                if count > 0:
-                    forms_info["input_types"][input_type] = count
-                    
+            return cleaned_html if cleaned_html else ""
+            
         except Exception as e:
-            print(f"表單分析失敗: {e}")
-            
-        return forms_info
-    
-    def _capture_content_patterns(self) -> List[str]:
-        """捕獲內容模式"""
-        patterns = []
-        
-        try:
-            # 獲取頁面文字內容
-            text_content = self.page.locator("body").text_content() or ""
-            
-            # 檢測常見模式
-            pattern_checks = [
-                ("has_prices", ["NT$", "$", "價格", "price"]),
-                ("has_search_terms", ["搜尋", "search", "查找", "find"]),
-                ("has_filter_terms", ["篩選", "filter", "分類", "category"]),
-                ("has_product_terms", ["商品", "product", "item", "goods"]),
-                ("has_cart_terms", ["購物車", "cart", "加入", "add"]),
-                ("has_navigation", ["首頁", "home", "關於", "about", "聯絡", "contact"]),
-                ("has_pagination", ["下一頁", "next", "上一頁", "previous", "頁"]),
-                ("has_sorting", ["排序", "sort", "order"])
-            ]
-            
-            for pattern_name, keywords in pattern_checks:
-                if any(keyword.lower() in text_content.lower() for keyword in keywords):
-                    patterns.append(pattern_name)
-                    
-        except Exception as e:
-            print(f"內容模式捕獲失敗: {e}")
-            
-        return patterns
+            print(f"HTML 清理失敗: {e}")
+            return self.page.content()[:50000]
     
     def ai_analyze_page_functionality(self, snapshot: Dict[str, Any]) -> Dict[str, Any]:
         """讓 AI 自主分析頁面功能和元素"""
@@ -316,28 +80,10 @@ class AIElementAnalyzer:
 - URL: {snapshot['url']}
 - 頁面標題: {snapshot['title']}
 
-📋 **實際元素範例**（這些是頁面上真實存在的元素）：
-```json
-{json.dumps(snapshot.get('actual_element_samples', {}), ensure_ascii=False, indent=2)}
-```
-
-🔍 **發現的關鍵字**（頁面實際包含的功能關鍵字）：
-{snapshot.get('text_content_keywords', [])}
-
-📊 **DOM結構統計**：
-{json.dumps(snapshot.get('dom_structure', {}), indent=2)}
-
-🎯 **互動元素統計**：
-{json.dumps(snapshot.get('interactive_elements_count', {}), indent=2)}
-
-📝 **表單分析結果**：
-{json.dumps(snapshot.get('form_analysis', {}), indent=2)}
-
-🏗️ **語義結構分析**：
-{json.dumps(snapshot.get('semantic_structure', {}), indent=2)}
-
-📈 **內容模式**：
-{snapshot.get('content_patterns', [])}
+📋 **實際 HTML 結構**：
+    ```html
+    {snapshot.get('page_content', '')} 
+    ```
 
 ⚠️ **JavaScript 驗證邏輯要求 - 關鍵修正**：
 
@@ -449,7 +195,6 @@ class AIElementAnalyzer:
         except Exception as e:
             print(f"❌ AI分析失敗: {e}")
             
-    
 
 class AutomatedTestGenerator:
     """AI 驅動的完全自動化測試生成器"""
@@ -522,7 +267,6 @@ class AutomatedTestGenerator:
         📸 **頁面快照摘要**:
         - URL: {analysis_result.get('page_snapshot', {}).get('url', '')}
         - 標題: {analysis_result.get('page_snapshot', {}).get('title', '')}
-        - 互動元素: {analysis_result.get('page_snapshot', {}).get('interactive_elements_count', {})}
 
         🚀 **請將 AI 分析轉化為具體的測試實施策略**:
 
@@ -545,7 +289,7 @@ class AutomatedTestGenerator:
             "timeout_settings": {{
                 "default_timeout": 30000,
                 "navigation_timeout": 30000,
-                "element_wait_timeout": 15000
+                "element_wait_timeout": 30000
             }},
             "ai_enhanced_target_elements": [
                 {{
@@ -874,8 +618,6 @@ AI 自主發現的功能:
         ai_summary = result['ai_analysis_summary']
         print(f"\n🤖 AI 自主分析成果:")
         print(f"   🔍 發現功能: {', '.join(ai_summary['discovered_functionality'])}")
-        print(f"   📋 生成場景: {ai_summary['ai_generated_scenarios']} 個")
-        print(f"   ✅ 驗證檢查: {ai_summary['ai_validation_checks']} 個")
         
         files = result['generated_files']
         print(f"\n📁 生成的文件:")

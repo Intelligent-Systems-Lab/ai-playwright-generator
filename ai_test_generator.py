@@ -41,7 +41,7 @@ class SelectorValidator:
                     'selector': primary,
                     'element_index': i,
                     'element_type': element.get('element_type', ''),
-                    'element_purpose': element.get('purpose', ''),
+                    'purpose': element.get('purpose', ''),
                     'element_action': element.get('action', ''),
                     'reasoning': selector_strategy.get('reasoning', '')
                 })
@@ -82,11 +82,8 @@ class SelectorValidator:
                 result = self._test_single_selector(selector_info)
                 validation_results.append(result)
                 
-                # 如果是鏈接且測試成功，嘗試點擊進行導航
-                if (result['success'] and 
-                    selector_info['element_type'].lower()  == 'link' and 
-                    selector_info['element_action'].lower()  == 'click'):
-                    
+                # 嘗試進行導航
+                if self._should_attempt_navigation(result, selector_info):
                     self._attempt_navigation(selector_info)
             
             # 計算驗證結果
@@ -116,11 +113,29 @@ class SelectorValidator:
     
     def _test_single_selector(self, selector_info: dict) -> dict:
         """測試單個選擇器"""
+
+        VALID_ACTIONS = {'click', 'hover', 'type', 'verify', 'navigate'}
+
         selector = selector_info['selector']
-        purpose = selector_info['element_purpose']
+        purpose = selector_info['purpose']
+        action = selector_info.get('element_action', '').lower().strip()
+
+        # 驗證 action 是否合法
+        if action and action not in VALID_ACTIONS:
+            result = {
+                'selector': selector,
+                'purpose': purpose,
+                'element_type': selector_info['element_type'],
+                'success': False,
+                'error': f'不支援的動作類型: {action}，僅支援: {", ".join(VALID_ACTIONS)}',
+                'current_url': self.page.url
+            }
+            print(f"      ❌ 不支援的動作: {action}")
+            return result
         
         print(f"   🎯 測試: {purpose}")
         print(f"      選擇器: {selector}")
+
         
         result = {
             'selector': selector,
@@ -129,7 +144,6 @@ class SelectorValidator:
             'success': False,
             'element_found': False,
             'element_visible': False,
-            'element_clickable': False,
             'text_matches': None,
             'error': None,
             'current_url': self.page.url
@@ -156,24 +170,177 @@ class SelectorValidator:
 
             
             if not is_visible:
-                result['error'] = '元素不可見'
-                print(f"      ⚠️ 元素存在但不可見")
-                return result
-            
-            print(f"      ✅ 元素可見")
-            
-            # 檢查可點擊性（針對需要交互的元素）
-            if selector_info['element_action'].lower()  == 'click':
-                is_enabled = first_element.is_enabled()
-                result['element_clickable'] = is_enabled
+                # 智能判斷是否為條件性隱藏元素
+                is_conditional_element = self._is_conditional_element(selector, selector_info)
                 
-                if not is_enabled:
-                    result['error'] = '元素不可點擊'
-                    print(f"      ❌ 元素不可點擊")
+                if is_conditional_element:
+                    print(f"      ⚠️ 條件性隱藏元素（如下拉選單內容）")
+                    result['conditional_success'] = True
+                    result['condition'] = '需要觸發父元素才會顯示'
+                    # 繼續後續驗證，但標記為條件性成功
+                else:
+                    result['error'] = '元素不可見'
+                    print(f"      ❌ 元素不可見")
                     return result
-                
-                print(f"      ✅ 元素可點擊")
+            else:
+                print(f"      ✅ 元素可見")
             
+            
+            # 根據 action 進行實際可行性測試
+            action = selector_info.get('element_action', '').lower().strip()
+
+            if action == 'click':
+                # 測試點擊可行性
+                try:
+                    is_enabled = first_element.is_enabled()
+                    if not is_enabled:
+                        result['error'] = '元素不可點擊'
+                        print(f"      ❌ 元素不可點擊")
+                        return result
+                    
+                    # 檢查元素是否真的可以接收點擊
+                    bounding_box = first_element.bounding_box()
+                    if not bounding_box or bounding_box['width'] == 0 or bounding_box['height'] == 0:
+                        result['error'] = '元素沒有可點擊的區域'
+                        print(f"      ❌ 元素沒有可點擊的區域")
+                        return result
+                        
+                    print(f"      ✅ 元素可以點擊")
+                    
+                except Exception as e:
+                    result['error'] = f'點擊測試失敗: {str(e)}'
+                    print(f"      ❌ 點擊測試異常: {e}")
+                    return result
+
+            elif action == 'type':
+                # 測試輸入可行性
+                try:
+                    # 嘗試 focus 操作
+                    first_element.focus()
+                    
+                    # 檢查是否可編輯
+                    is_editable = first_element.is_editable()
+                    if not is_editable:
+                        result['error'] = '元素不可編輯'
+                        print(f"      ❌ 元素不可編輯")
+                        return result
+                    
+                    # 嘗試清空並輸入測試文字（不影響頁面狀態）
+                    try:
+                        original_value = first_element.input_value()
+                    except:
+                        original_value = first_element.text_content()
+                    
+                    # 嘗試輸入測試
+                    first_element.clear()
+                    first_element.fill("test")
+                    
+                    # 檢查是否真的可以輸入
+                    current_value = ""
+                    try:
+                        current_value = first_element.input_value()
+                    except:
+                        current_value = first_element.text_content()
+                    
+                    if "test" not in current_value:
+                        result['error'] = '元素無法接受輸入'
+                        print(f"      ❌ 元素無法接受輸入")
+                        return result
+                    
+                    # 恢復原始值
+                    first_element.clear()
+                    if original_value:
+                        first_element.fill(original_value)
+                    
+                    print(f"      ✅ 元素可以輸入")
+                    
+                except Exception as e:
+                    result['error'] = f'輸入測試失敗: {str(e)}'
+                    print(f"      ❌ 輸入測試異常: {e}")
+                    return result
+
+            elif action == 'hover':
+                # 測試懸停可行性
+                try:
+                    # 嘗試懸停操作
+                    first_element.hover()
+                    
+                    # 懸停通常都會成功，除非元素有問題
+                    print(f"      ✅ 元素可以懸停")
+                    
+                except Exception as e:
+                    result['error'] = f'懸停測試失敗: {str(e)}'
+                    print(f"      ❌ 懸停測試異常: {e}")
+                    return result
+
+            elif action == 'verify':
+                # 測試驗證可行性
+                try:
+                    # 檢查元素是否有可驗證的內容
+                    has_text = bool(first_element.text_content())
+                    has_value = False
+                    has_attribute = False
+                    
+                    try:
+                        has_value = bool(first_element.input_value())
+                    except:
+                        pass
+                    
+                    try:
+                        # 檢查一些常見的可驗證屬性
+                        common_attrs = ['title', 'alt', 'data-value', 'aria-label']
+                        for attr in common_attrs:
+                            if first_element.get_attribute(attr):
+                                has_attribute = True
+                                break
+                    except:
+                        pass
+                    
+                    if not (has_text or has_value or has_attribute):
+                        result['error'] = '元素沒有可驗證的內容'
+                        print(f"      ⚠️ 警告: 元素沒有明顯可驗證的內容")
+                        # 不直接失敗，因為可能有其他驗證方式
+                    
+                    print(f"      ✅ 元素可以進行驗證")
+                    
+                except Exception as e:
+                    result['error'] = f'驗證測試失敗: {str(e)}'
+                    print(f"      ❌ 驗證測試異常: {e}")
+                    return result
+
+            elif action == 'navigate':
+                # 測試導航可行性
+                try:
+                    # 檢查是否有導航相關的屬性
+                    href = first_element.get_attribute("href")
+                    onclick = first_element.get_attribute("onclick")
+                    cursor = first_element.evaluate("el => getComputedStyle(el).cursor")
+                    
+                    # 檢查是否有導航的跡象
+                    has_navigation_signs = (
+                        href and href != "#" and not href.startswith("javascript:void") or
+                        onclick or
+                        cursor == "pointer"
+                    )
+                    
+                    if not has_navigation_signs:
+                        result['error'] = '元素沒有導航功能的跡象'
+                        print(f"      ⚠️ 警告: 元素沒有明顯的導航功能跡象")
+                        # 不直接失敗，因為可能有其他導航方式
+                    
+                    print(f"      ✅ 元素可能支援導航")
+                    
+                except Exception as e:
+                    result['error'] = f'導航測試失敗: {str(e)}'
+                    print(f"      ❌ 導航測試異常: {e}")
+                    return result
+
+            else:
+                # 未知 action（應該在前面的 VALID_ACTIONS 檢查中被攔截）
+                result['error'] = f'未知的動作類型: {action}'
+                print(f"      ❌ 未知動作: {action}")
+                return result
+                
             # 檢查文本內容（如果選擇器包含文本期望）
             text_expectation = self._extract_text_expectation(selector)
             if text_expectation:
@@ -202,8 +369,32 @@ class SelectorValidator:
         
         return result
     
+
+    def _is_conditional_element(self, selector: str, selector_info: dict) -> bool:
+        """判斷是否為條件性顯示的元素"""
+        conditional_indicators = [
+            'following-sibling',
+            'dropdown',
+            'submenu', 
+            'popup',
+            'modal',
+            'tooltip'
+        ]
+        
+        selector_lower = selector.lower()
+        purpose_lower = selector_info.get('purpose', '').lower()
+        
+        return any(indicator in selector_lower or indicator in purpose_lower 
+                for indicator in conditional_indicators)
+    
+
     def _create_locator_from_selector(self, selector: str):
         """創建 Playwright Locator，不做任何轉換"""
+
+        # 處理特殊的非選擇器情況
+        if selector.startswith('N/A') or 'window.location' in selector:
+            raise ValidationError(f'無效的選擇器語法: {selector}')
+        
         # 檢查不兼容的語法並直接拋錯
         if ':contains(' in selector:
             raise ValidationError('Playwright 不支援 :contains() 偽選擇器語法')
@@ -234,6 +425,22 @@ class SelectorValidator:
         
         return None
     
+    def _should_attempt_navigation(self, result: dict, selector_info: dict) -> bool:
+        """判斷是否應該嘗試導航"""
+        if not result['success']:
+            return False
+        
+        action = selector_info.get('element_action', '').lower().strip()
+        element_type = selector_info.get('element_type', '').lower()
+        
+        # 基於 action 和 element_type 判斷
+        is_navigation_action = action in ['click', 'navigate']
+        is_navigation_element = any(keyword in element_type for keyword in 
+                                ['link', 'button', 'menu', 'nav'])
+        
+        return is_navigation_action and is_navigation_element
+    
+
     def _attempt_navigation(self, selector_info: dict):
         """嘗試點擊鏈接進行導航"""
         try:
@@ -628,7 +835,16 @@ class AutomatedTestGenerator:
         - 不要使用變數聲明、return 語句或複雜邏輯
         - 使用正確的引號轉義：`document.querySelector('input[type="search"]') !== null`
         - 避免複雜的邏輯組合
-        
+
+        ⚠️ **Action 嚴格規範**：
+        element_action 必須且只能使用以下值之一：
+        - "click" - 點擊操作（按鈕、連結等）
+        - "hover" - 懸停操作（下拉菜單觸發等）
+        - "type" - 輸入操作（文字輸入框等）
+        - "verify" - 驗證操作（檢查元素存在、內容等）
+        - "navigate" - 導航操作（頁面跳轉）
+
+        請嚴格使用上述英文小寫值，不要創造其他動作名稱。
 
         請返回 JSON 格式的實施策略:
 
@@ -647,7 +863,7 @@ class AutomatedTestGenerator:
                         "fallbacks": ["AI推薦的備選選擇器"],
                         "reasoning": "選擇器選用原因"
                     }},
-                    "action": "操作類型",
+                    "action": "操作類型（click/hover/type/verify/navigate）",
                     "purpose": "AI分析的元素用途"
                 }}
             ],

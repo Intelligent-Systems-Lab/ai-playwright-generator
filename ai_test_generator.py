@@ -6,9 +6,356 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional
 import google.generativeai as genai
 from playwright.sync_api import sync_playwright, Page, Browser, BrowserContext
+from urllib.parse import urljoin, urlparse
+
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# 為了區分是驗證錯誤還是其他錯誤，定義一個專用的驗證錯誤異常
+class ValidationError(Exception):
+    """驗證錯誤異常"""
+    pass
+
+class SelectorValidator:
+    """通用實際選擇器驗證器 - 適用於任何網站"""
+    
+    def __init__(self, timeout: int = 30000, headless: bool = True):
+        self.timeout = timeout
+        self.headless = headless
+        self.browser = None
+        self.page = None
+        self.validation_results = []
+    
+    def extract_primary_selectors_from_strategy(self, strategy_data: dict) -> list:
+        """從策略數據中提取主要選擇器（按順序）"""
+        selectors = []
+        target_elements = strategy_data.get('ai_enhanced_target_elements', [])
+        
+        for i, element in enumerate(target_elements):
+            selector_strategy = element.get('selector_strategy', {})
+            primary = selector_strategy.get('primary', '')
+            
+            if primary:
+                selectors.append({
+                    'selector': primary,
+                    'element_index': i,
+                    'element_type': element.get('element_type', ''),
+                    'element_purpose': element.get('purpose', ''),
+                    'element_action': element.get('action', ''),
+                    'reasoning': selector_strategy.get('reasoning', '')
+                })
+        
+        return selectors
+    
+    def validate_selectors_sequentially(self, target_website: str, selectors: list) -> dict:
+        """按順序驗證選擇器，自然跟隨用戶流程"""
+        
+        try:
+            with sync_playwright() as p:
+                self.browser = p.chromium.launch(headless=self.headless)
+                self.page = self.browser.new_page()
+                self.page.set_default_timeout(self.timeout)
+                
+                # 執行順序驗證
+                results = self._execute_sequential_validation(target_website, selectors)
+                
+                return results
+                
+        except Exception as e:
+            raise ValidationError(f"瀏覽器啟動失敗: {str(e)}")
+    
+    def _execute_sequential_validation(self, target_website: str, selectors: list) -> dict:
+        """執行順序驗證"""
+        validation_results = []
+        
+        try:
+            # 載入初始頁面
+            print(f"\n🏠 載入初始頁面")
+            self._load_page(target_website, '初始頁面')
+            
+            # 按順序測試每個選擇器
+            for i, selector_info in enumerate(selectors, 1):
+                print(f"\n📍 選擇器 {i}/{len(selectors)}")
+                
+                # 測試選擇器
+                result = self._test_single_selector(selector_info)
+                validation_results.append(result)
+                
+                # 如果是鏈接且測試成功，嘗試點擊進行導航
+                if (result['success'] and 
+                    selector_info['element_type'].lower()  == 'link' and 
+                    selector_info['element_action'].lower()  == 'click'):
+                    
+                    self._attempt_navigation(selector_info)
+            
+            # 計算驗證結果
+            return self._calculate_validation_results(validation_results)
+            
+        except ValidationError:
+            # 重新拋出驗證錯誤
+            raise
+        except Exception as e:
+            raise ValidationError(f"順序驗證執行失敗: {str(e)}")
+    
+    def _load_page(self, url: str, page_name: str):
+        """載入頁面並檢查是否成功"""
+        try:
+            print(f"   🔄 正在載入 {page_name}: {url}")
+            response = self.page.goto(url)
+            
+            if not response or response.status >= 400:
+                raise ValidationError(f"{page_name}載入失敗 - HTTP {response.status if response else 'No Response'}")
+            
+            # 等待頁面載入完成
+            self.page.wait_for_load_state('networkidle', timeout=self.timeout)
+            print(f"   ✅ {page_name}載入成功")
+            
+        except Exception as e:
+            raise ValidationError(f"{page_name}載入失敗: {str(e)}")
+    
+    def _test_single_selector(self, selector_info: dict) -> dict:
+        """測試單個選擇器"""
+        selector = selector_info['selector']
+        purpose = selector_info['element_purpose']
+        
+        print(f"   🎯 測試: {purpose}")
+        print(f"      選擇器: {selector}")
+        
+        result = {
+            'selector': selector,
+            'purpose': purpose,
+            'element_type': selector_info['element_type'],
+            'success': False,
+            'element_found': False,
+            'element_visible': False,
+            'element_clickable': False,
+            'text_matches': None,
+            'error': None,
+            'current_url': self.page.url
+        }
+        
+        try:
+            # 直接使用原始選擇器，不做任何轉換
+            locator = self._create_locator_from_selector(selector)
+            
+            # 檢查元素是否存在
+            element_count = locator.count()
+            if element_count == 0:
+                result['error'] = '元素不存在'
+                print(f"      ❌ 元素不存在")
+                return result
+            
+            result['element_found'] = True
+            print(f"      ✅ 找到 {element_count} 個元素")
+            
+            # 檢查第一個元素的可見性
+            first_element = locator.first
+            is_visible = first_element.is_visible()
+            result['element_visible'] = is_visible
+
+            
+            if not is_visible:
+                result['error'] = '元素不可見'
+                print(f"      ⚠️ 元素存在但不可見")
+                return result
+            
+            print(f"      ✅ 元素可見")
+            
+            # 檢查可點擊性（針對需要交互的元素）
+            if selector_info['element_action'].lower()  == 'click':
+                is_enabled = first_element.is_enabled()
+                result['element_clickable'] = is_enabled
+                
+                if not is_enabled:
+                    result['error'] = '元素不可點擊'
+                    print(f"      ❌ 元素不可點擊")
+                    return result
+                
+                print(f"      ✅ 元素可點擊")
+            
+            # 檢查文本內容（如果選擇器包含文本期望）
+            text_expectation = self._extract_text_expectation(selector)
+            if text_expectation:
+                actual_text = first_element.text_content() or ''
+                text_matches = text_expectation in actual_text
+                result['text_matches'] = text_matches
+                
+                if not text_matches:
+                    result['error'] = f'文本不匹配，期望包含: {text_expectation}, 實際: {actual_text[:50]}'
+                    print(f"      ❌ 文本不匹配")
+                    return result
+                
+                print(f"      ✅ 文本匹配")
+            
+            # 所有檢查都通過
+            result['success'] = True
+            print(f"      🎉 選擇器驗證成功")
+            
+        except Exception as e:
+            # 檢查是否是不兼容的語法
+            if ':contains(' in selector:
+                result['error'] = 'Playwright 不支援 :contains() 偽選擇器語法'
+            else:
+                result['error'] = str(e)
+            print(f"      ❌ 驗證失敗: {result['error']}")
+        
+        return result
+    
+    def _create_locator_from_selector(self, selector: str):
+        """創建 Playwright Locator，不做任何轉換"""
+        # 檢查不兼容的語法並直接拋錯
+        if ':contains(' in selector:
+            raise ValidationError('Playwright 不支援 :contains() 偽選擇器語法')
+        
+        # 處理 XPath
+        if selector.startswith('//'):
+            return self.page.locator(f"xpath={selector}")
+        
+        # 處理 CSS 選擇器
+        return self.page.locator(selector)
+    
+    def _extract_text_expectation(self, selector: str) -> str:
+        """從選擇器中提取文本期望（用於驗證）"""
+        # 從 XPath text() 中提取
+        text_match = re.search(r"text\(\)='([^']+)'", selector)
+        if text_match:
+            return text_match.group(1)
+        
+        # 從 normalize-space() 中提取
+        normalize_match = re.search(r"normalize-space\(\)='([^']+)'", selector)
+        if normalize_match:
+            return normalize_match.group(1)
+        
+        # 從 contains(text(), ...) 中提取
+        contains_text_match = re.search(r"contains\(text\(\),\s*['\"]([^'\"]+)['\"]", selector)
+        if contains_text_match:
+            return contains_text_match.group(1)
+        
+        return None
+    
+    def _attempt_navigation(self, selector_info: dict):
+        """嘗試點擊鏈接進行導航"""
+        try:
+            print(f"   🔄 嘗試點擊導航: {selector_info['purpose']}")
+            
+            # 記錄當前 URL
+            original_url = self.page.url
+            
+            # 創建定位器並點擊
+            locator = self._create_locator_from_selector(selector_info['selector'])
+            
+            # 點擊第一個元素
+            locator.first.click()
+            
+            # 等待可能的導航
+            try:
+                self.page.wait_for_load_state('networkidle', timeout=10000)  
+            except:
+                pass  # 如果沒有導航也沒關係
+            
+            # 檢查是否發生了導航
+            new_url = self.page.url
+            if new_url != original_url:
+                print(f"   ✅ 導航成功: {original_url} → {new_url}")
+            else:
+                print(f"   ℹ️ 點擊完成，頁面未改變")
+                
+        except Exception as e:
+            # 導航失敗不算致命錯誤，只記錄日誌
+            print(f"   ⚠️ 導航嘗試失敗: {e}")
+    
+    def _calculate_validation_results(self, validation_results: list) -> dict:
+        """計算驗證結果"""
+        total_selectors = len(validation_results)
+        successful_selectors = sum(1 for r in validation_results if r['success'])
+        failed_selectors = total_selectors - successful_selectors
+        
+        if total_selectors == 0:
+            failure_rate = 0
+        else:
+            failure_rate = (failed_selectors / total_selectors) * 100
+        
+        # 收集失敗詳情
+        failed_details = [r for r in validation_results if not r['success']]
+        
+        print(f"\n📊 驗證結果統計:")
+        print(f"   總選擇器: {total_selectors}")
+        print(f"   成功: {successful_selectors} ✅")
+        print(f"   失敗: {failed_selectors} ❌")
+        print(f"   失敗率: {failure_rate:.1f}%")
+        
+        return {
+            'total_selectors': total_selectors,
+            'successful_selectors': successful_selectors,
+            'failed_selectors': failed_selectors,
+            'failure_rate': failure_rate,
+            'failed_details': failed_details,
+            'all_results': validation_results,
+            'validation_passed': failure_rate <= 50.0  # 50% 是通過標準
+        }
+
+class StrategyValidator:
+    """通用策略驗證器"""
+    
+    def __init__(self):
+        self.selector_validator = SelectorValidator()
+    
+    def validate_strategy(self, test_strategy: str, target_website: str) -> dict:
+        """
+        驗證策略文件 - 使用通用實際瀏覽器測試
+        
+        Args:
+            test_strategy: JSON 格式的測試策略
+            target_website: 目標網站 URL
+        
+        Returns:
+            驗證結果字典
+        
+        Raises:
+            ValidationError: 當驗證失敗時拋出
+        """
+        try:
+            strategy_data = json.loads(test_strategy)
+        except json.JSONDecodeError as e:
+            raise ValidationError(f"策略格式錯誤: {e}")
+        
+        print("🔍 開始選擇器驗證...")
+        
+        # 提取主要選擇器
+        selectors = self.selector_validator.extract_primary_selectors_from_strategy(strategy_data)
+        
+        if not selectors:
+            return {
+                'validation_passed': True,
+                'message': '未發現需要驗證的主要選擇器'
+            }
+        
+        print(f"📋 將按順序驗證 {len(selectors)} 個主要選擇器")
+        
+        # 執行實際驗證
+        results = self.selector_validator.validate_selectors_sequentially(target_website, selectors)
+        
+        # 檢查是否通過驗證
+        if not results['validation_passed']:
+            # 準備失敗報告
+            failed_details = []
+            for failure in results['failed_details'][:3]:  # 只顯示前3個失敗
+                failed_details.append(f"• {failure['purpose']}: {failure['error']}")
+            
+            raise ValidationError(
+                f"選擇器驗證失敗 - 失敗率 {results['failure_rate']:.1f}% > 50%\n"
+                f"失敗的選擇器:\n" + "\n".join(failed_details)
+            )
+        
+        # 驗證通過
+        print(f"\n✅ 通用實際驗證通過!")
+        print(f"   成功率: {100 - results['failure_rate']:.1f}%")
+        
+        return {
+            'validation_passed': True,
+            'validation_results': results
+        }
 
 class AIElementAnalyzer:
     """AI 驅動的元素分析器 - 讓 AI 自主發現和分析網站元素"""
@@ -99,6 +446,11 @@ class AIElementAnalyzer:
     2. **選擇器設計**：使用實際發現的元素文字和屬性來設計選擇器
     3. **測試場景**：基於真實的元素互動設計可執行的測試場景
     4. **驗證邏輯**：編寫在實際瀏覽器環境中可運行的JavaScript檢查
+
+重要提醒：
+- 不要使用 :contains() 偽選擇器（Playwright 不支援）
+- 使用標準的 CSS 選擇器或 XPath
+- 如需文本匹配，使用 XPath 的 text() 或 contains() 函數
 
 
 🎯 **期望的JSON回應格式**：
@@ -198,6 +550,7 @@ class AutomatedTestGenerator:
         self.setup_gemini()
         self.output_dir = Path("auto_generated_tests")
         self.output_dir.mkdir(exist_ok=True)
+        self.strategy_validator = StrategyValidator()
         
     def setup_gemini(self):
         """設置 Gemini AI"""
@@ -245,6 +598,7 @@ class AutomatedTestGenerator:
             
         return analysis_result
     
+    
     def generate_ai_driven_test_case(self, analysis_result: Dict[str, Any], test_requirements: str) -> str:
         """基於 AI 分析生成測試場景和策略"""
         print("🧠 生成 AI 驅動的測試策略...")
@@ -274,6 +628,7 @@ class AutomatedTestGenerator:
         - 不要使用變數聲明、return 語句或複雜邏輯
         - 使用正確的引號轉義：`document.querySelector('input[type="search"]') !== null`
         - 避免複雜的邏輯組合
+        
 
         請返回 JSON 格式的實施策略:
 
@@ -334,6 +689,31 @@ class AutomatedTestGenerator:
             print(f"❌ 策略生成失敗: {e}")
             return "{}"
     
+    def validate_strategy_before_generation(self, test_strategy: str) -> bool:
+        """
+        在生成測試代碼前驗證策略
+        如果驗證失敗會拋出 ValidationError 異常
+        """
+        
+        try:
+            validation_result = self.strategy_validator.validate_strategy(
+                test_strategy, 
+                self.target_website
+            )
+            
+            return True
+            
+        except ValidationError as e:
+            print(f"\n❌ 驗證失敗:")
+            print(f"   {str(e)}")
+            print(f"\n🛑 測試生成已停止，請修正上述問題後重試")
+            return False
+        except Exception as e:
+            print(f"\n⚠️ 驗證過程發生錯誤: {e}")
+            print(f"⚠️ 繼續生成測試代碼，但建議檢查選擇器")
+            return True
+    
+
     def generate_ai_driven_test_code(self, analysis_result: Dict[str, Any], test_strategy: str, test_requirements: str) -> str:
         """生成基於 AI 分析的測試代碼"""
         print("⚡ 生成 AI 驅動的測試代碼...")
@@ -356,6 +736,7 @@ class AutomatedTestGenerator:
         3. **AI 驗證邏輯** - 整合 AI 生成的 JavaScript 檢查邏輯
         4. **容錯機制** - 基於 AI 推薦的備選方案實現容錯
         5. **詳細註解** - 說明每個決策的 AI 分析依據
+
 
         ⚠️ **Fixture 錯誤修正要求**:
        
@@ -461,7 +842,7 @@ class AutomatedTestGenerator:
                 self.page_object = FilterTestPageObject(page)
                 page.set_default_timeout(30000)
                 
-            def test_scenario_1(self, page_object):
+            def test_scenario_1(self):
                 # 測試方法實現
                 pass
         ```
@@ -491,7 +872,7 @@ class AutomatedTestGenerator:
 
         重要注意事項：
         - 避免 'locator' object is not callable 錯誤
-        - 測試方法參數使用 page_object
+        - 測試方法直接使用 self.page_object（不要添加參數）
         - 所有 page 操作都通過 page_object.page 進行
         - 使用 pytest.skip() 而不是 assert False
         - 每個測試都要設定 30 秒超時
@@ -518,19 +899,34 @@ class AutomatedTestGenerator:
         start_time = datetime.now()
         
         # 步驟 1: AI 驅動網站分析
-        print("\n🔍 步驟 1/4: AI 驅動網站分析")
+        print("\n🔍 步驟 1/5: AI 驅動網站分析")
         analysis_result = self.ai_driven_website_analysis(test_requirements)
         
         # 步驟 2: 生成 AI 驅動測試策略
-        print("\n🧠 步驟 2/4: 生成 AI 驅動測試策略")
+        print("\n🧠 步驟 2/5: 生成 AI 驅動測試策略")
         test_cases = self.generate_ai_driven_test_case(analysis_result, test_requirements)
+
+        # 步驟 3: 策略驗證 (新增的驗證步驟)
+        print("\n🛡️ 步驟 3/5: 策略驗證 (鏈接 + 選擇器)")
+        print("=" * 50)
+        validation_passed = self.validate_strategy_before_generation(test_cases)
         
-        # 步驟 3: 生成 AI 驅動測試代碼
-        print("\n⚡ 步驟 3/4: 生成 AI 驅動測試代碼")
+        if not validation_passed:
+            return {
+                "success": False,
+                "error": "策略驗證失敗，測試生成已停止",
+                "test_requirements": test_requirements,
+                "target_website": self.target_website,
+                "timestamp": datetime.now().isoformat(),
+                "suggestion": "請檢查並修正策略中的鏈接和選擇器問題後重試"
+            }
+        
+        # 步驟 3: 生成 AI 驅動測試代碼 (只有驗證通過才會執行)
+        print("\n⚡ 步驟 4/5: 生成 AI 驅動測試代碼")
         test_code = self.generate_ai_driven_test_code(analysis_result, test_cases, test_requirements)
         
         # 步驟 4: 保存所有文件
-        print("\n💾 步驟 4/4: 保存生成的文件")
+        print("\n💾 步驟 5/5: 保存生成的文件")
         saved_files = self.save_generated_files(analysis_result, test_cases, test_code, test_requirements)
         
         end_time = datetime.now()
@@ -541,6 +937,7 @@ class AutomatedTestGenerator:
             "test_requirements": test_requirements,
             "target_website": self.target_website,
             "generation_time": duration,
+            "validation_passed": True,
             "ai_analysis_summary": {
                 "discovered_functionality": analysis_result.get('ai_analysis', {}).get('discovered_functionality', []),
                 "ai_generated_scenarios": len(analysis_result.get('ai_analysis', {}).get('ai_test_scenarios', [])),
@@ -607,6 +1004,7 @@ AI 自主發現的功能:
         print(f"🎯 測試需求: {result['test_requirements']}")
         print(f"🌐 目標網站: {result['target_website']}")
         print(f"⏱️  總耗時: {result['generation_time']:.2f} 秒")
+        print(f"🛡️ 驗證結果: {'✅ 通過' if result.get('validation_passed') else '❌ 失敗'}")
         
         ai_summary = result['ai_analysis_summary']
         print(f"\n🤖 AI 自主分析成果:")

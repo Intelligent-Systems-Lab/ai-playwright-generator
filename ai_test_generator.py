@@ -170,20 +170,11 @@ class SelectorValidator:
 
             
             if not is_visible:
-                # 智能判斷是否為條件性隱藏元素
-                is_conditional_element = self._is_conditional_element(selector, selector_info)
-                
-                if is_conditional_element:
-                    print(f"      ⚠️ 條件性隱藏元素（如下拉選單內容）")
-                    result['conditional_success'] = True
-                    result['condition'] = '需要觸發父元素才會顯示'
-                    # 繼續後續驗證，但標記為條件性成功
-                else:
-                    result['error'] = '元素不可見'
-                    print(f"      ❌ 元素不可見")
-                    return result
-            else:
-                print(f"      ✅ 元素可見")
+                result['error'] = '元素不可見'
+                print(f"      ❌ 元素不可見")
+                return result
+
+            print(f"      ✅ 元素可見")
             
             
             # 根據 action 進行實際可行性測試
@@ -369,23 +360,6 @@ class SelectorValidator:
         
         return result
     
-
-    def _is_conditional_element(self, selector: str, selector_info: dict) -> bool:
-        """判斷是否為條件性顯示的元素"""
-        conditional_indicators = [
-            'following-sibling',
-            'dropdown',
-            'submenu', 
-            'popup',
-            'modal',
-            'tooltip'
-        ]
-        
-        selector_lower = selector.lower()
-        purpose_lower = selector_info.get('purpose', '').lower()
-        
-        return any(indicator in selector_lower or indicator in purpose_lower 
-                for indicator in conditional_indicators)
     
 
     def _create_locator_from_selector(self, selector: str):
@@ -499,7 +473,7 @@ class SelectorValidator:
             'failure_rate': failure_rate,
             'failed_details': failed_details,
             'all_results': validation_results,
-            'validation_passed': failure_rate <= 50.0  # 50% 是通過標準
+            'validation_passed': failure_rate  <= 0  
         }
 
 class StrategyValidator:
@@ -551,7 +525,7 @@ class StrategyValidator:
                 failed_details.append(f"• {failure['purpose']}: {failure['error']}")
             
             raise ValidationError(
-                f"選擇器驗證失敗 - 失敗率 {results['failure_rate']:.1f}% > 50%\n"
+                f"選擇器驗證失敗 - 失敗率 {results['failure_rate']:.1f}% \n"
                 f"失敗的選擇器:\n" + "\n".join(failed_details)
             )
         
